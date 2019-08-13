@@ -44,14 +44,13 @@ type Processor struct {
 }
 
 // 创建processor实例 
-func NewProcessor(c chan struct{}, q chan *structs.Record, id int, dir string) *Processor {
+func NewProcessor(q chan *structs.Record, id int, dir string) *Processor {
     p := &Processor {
-        stopCh : c,
         queue : q,
         ID : id,
         buffer : list.New(),
         Threshold : 10000,
-        time : 60,
+        time : 5,
         Dir : dir,
     }
 
@@ -68,8 +67,10 @@ func (p *Processor) Run(round int) {
         case t := <-p.queue:
             p.InsertCache(t)
         case <-timer:
+            fmt.Printf("after timer dump.\n")
             p.Dump()
         case <-p.stopCh:
+            fmt.Printf("after stop dump.\n")
             // graceful exit
             // p.Lock()
             left := len(p.queue)
@@ -98,6 +99,7 @@ func (p *Processor) InsertCache(r *structs.Record) {
     p.buffer.PushBack(r)
 
     if p.buffer.Len() > p.Threshold {
+        fmt.Printf("over threshold dump.\n")
         p.Dump()
     }
 
@@ -123,4 +125,9 @@ func (p *Processor) Dump() {
     p.buffer.Init()
 
     return
+}
+
+// 设置退出的通知channel
+func (p *Processor) SetStopCh(ch chan struct{}) {
+    p.stopCh = ch
 }

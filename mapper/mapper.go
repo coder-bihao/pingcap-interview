@@ -8,6 +8,8 @@ import (
     "sync"
     "errors"
     "bufio"
+    "strings"
+    "strconv"
     "path/filepath"
 
     "structs"
@@ -23,7 +25,6 @@ var wg sync.WaitGroup
 type Spilt struct {
     // 互斥锁
     sync.Mutex
-
 
     // 启停channel
     StopCh chan struct {}
@@ -62,7 +63,6 @@ type Spilt struct {
 func NewSpilter(bigFilePath string, spiltedFilesPath string, processorNum int, maxSize int) *Spilt {
     once.Do(func() {
         spilter = &Spilt {
-            StopCh : make(chan struct{}),
             TaskQueue : make(map[int]chan *structs.Record),
             Processors : make(map[int]*Processor),
             ProcessorNum : processorNum,
@@ -76,7 +76,7 @@ func NewSpilter(bigFilePath string, spiltedFilesPath string, processorNum int, m
         for idx := 0; idx < spilter.ProcessorNum; idx++ {
             ch := make(chan *structs.Record, 10000)
             spilter.TaskQueue[idx]  = ch
-            spilter.Processors[idx] = NewProcessor(spilter.StopCh, ch, idx, spilter.SpiltedFilesPath)
+            spilter.Processors[idx] = NewProcessor(ch, idx, spilter.SpiltedFilesPath)
         }
     })
 
@@ -87,10 +87,12 @@ func NewSpilter(bigFilePath string, spiltedFilesPath string, processorNum int, m
 func (s *Spilt) StartProcessor(round int) {
     fmt.Printf("mapper| start processor round[%d] begin.\n", round)
     s.Lock()
+    s.StopCh = make(chan struct{})
 
     // 启动processor
     for idx := 0; idx < s.ProcessorNum; idx++ {
         p, _ := s.Processors[idx]
+        p.SetStopCh(s.StopCh)
         go p.Run(round)
     }
 
@@ -156,9 +158,6 @@ func (s *Spilt) Map() (bool, error) {
         // step4.停止processor消费协程
         s.ShutDownProcessor()
 
-        // TODO
-        // step5.sync数据到磁盘
-
         if bigFiles := s.selectBigSpiltedFiles(s.SpiltedFilesPath); len(bigFiles) == 0 {
             s.IsComplete = true
             break
@@ -207,6 +206,12 @@ func (s *Spilt) SpiltBigFiles(round int) error {
                 break
             }
 
+            // 读取的非原始文件
+            if round > 0 {
+                str, pos := s.spiltLine(string(line))
+                s.spiltStrategy.Dispatch(str, pos, s.ProcessorNum, s.TaskQueue)
+            }
+
             //fmt.Printf("mapper| debug line[%s] pos[%v] dispatch.\n", string(line), pos)
             s.spiltStrategy.Dispatch(string(line), pos, s.ProcessorNum, s.TaskQueue)
             pos = pos + 1
@@ -217,8 +222,9 @@ func (s *Spilt) SpiltBigFiles(round int) error {
     s.spiltStrategy.Done(s.TaskQueue)
 
     // 移除上一轮次的大文件
-    if round > 1 && len(filePaths) > 0 {
+    if round > 0 && len(filePaths) > 0 {
         for _, file := range filePaths {
+            fmt.Printf("mapper| remove file[%s].", file)
             os.Remove(file)
         }
     }
@@ -272,4 +278,12 @@ func (s *Spilt) isOverMaxSize(path string) bool {
     }
 
     return false
+}
+
+// 分割字符串 \t分割
+func (s *Spilt) spiltLine(line string) (string, uint64) {
+    spiltList := strings.Split(line, "\t")
+    pos, _ := strconv.ParseUint(spiltList[1], 10, 64)
+
+    return spiltList[0], pos
 }
